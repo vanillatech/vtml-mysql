@@ -24,72 +24,10 @@
   @file ha_vtml.cc
 
   @brief
-  The ha_vtml engine is a stubbed storage engine for vtml purposes only;
-  it does nothing at this point. Its purpose is to provide a source
-  code illustration of how to begin writing new storage engines; see also
-  /storage/vtml/ha_vtml.h.
-
-  @details
-  ha_vtml will let you create/open/delete tables, but
-  nothing further (for vtml, indexes are not supported nor can data
-  be stored in the table). Use this vtml as a template for
-  implementing the same functionality in your own storage engine. You
-  can enable the vtml storage engine in your build by doing the
-  following during your build process:<br> ./configure
-  --with-vtml-storage-engine
-
-  Once this is done, MySQL will let you create tables with:<br>
-  CREATE TABLE \<table name\> (...) ENGINE=VTML;
-
-  The vtml storage engine is set up to use table locks. It
-  implements an vtml "SHARE" that is inserted into a hash by table
-  name. You can use this to store information of state that any
-  vtml handler object will be able to see when it is using that
-  table.
-
-  Please read the object definition in ha_vtml.h before reading the rest
-  of this file.
-
-  @note
-  When you create an VTML table, the MySQL Server creates a table .frm
-  (format) file in the database directory, using the table name as the file
-  name as is customary with MySQL. No other files are created. To get an idea
-  of what occurs, here is an vtml select that would do a scan of an entire
-  table:
-
-  @code
-  ha_vtml::store_lock
-  ha_vtml::external_lock
-  ha_vtml::info
-  ha_vtml::rnd_init
-  ha_vtml::extra
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::rnd_next
-  ha_vtml::extra
-  ha_vtml::external_lock
-  ha_vtml::extra
-  ENUM HA_EXTRA_RESET        Reset database to after open
-  @endcode
-
-  Here you see that the vtml storage engine has 9 rows called before
-  rnd_next signals that it has reached the end of its data. Also note that
-  the table in question was already opened; had it not been open, a call to
-  ha_vtml::open() would also have been necessary. Calls to
-  ha_vtml::extra() are hints as to what will be occurring to the request.
-
-  A Longer Example can be found called the "Skeleton Engine" which can be
-  found on TangentOrg. It has both an engine and a full build environment
-  for building a pluggable storage engine.
-
-  Happy coding!<br>
-    -Brian
+  This class sends the field name and row info to the remote server
+  by VTMLCommunicationHandler. Differently from any other storage engines,
+  it stores the data in the server. In need of reading the data this class sends
+  a json string to the server and request the data.
 */
 
 #include "storage/vtml/ha_vtml.h"
@@ -99,6 +37,22 @@
 #include "sql/sql_class.h"
 #include "sql/sql_plugin.h"
 #include "typelib.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <storage/vtml/VTMLCommunicationHandler.h>
+#include "sql_string.h"
+#include "sql/field.h"
+
+
+void replaceString(std::string& str, const std::string& occurance,
+                          const std::string& replace) {
+    size_t pos = 0;
+    while ((pos = str.find(occurance, pos)) != std::string::npos) {
+        str.replace(pos, occurance.length(), replace);
+         pos += replace.length();
+    }
+}
 
 static handler *vtml_create_handler(handlerton *hton, TABLE_SHARE *table,
                                        bool partitioned, MEM_ROOT *mem_root);
@@ -110,7 +64,7 @@ static bool vtml_is_supported_system_table(const char *db,
                                               const char *table_name,
                                               bool is_sql_layer_system_table);
 
-Example_share::Example_share() { thr_lock_init(&lock); }
+Vtml_share::Vtml_share() { thr_lock_init(&lock); }
 
 static int vtml_init_func(void *p) {
   DBUG_TRACE;
@@ -131,15 +85,14 @@ static int vtml_init_func(void *p) {
   one of these? Well, you have pieces that are used for locking, and
   they are needed to function.
 */
-
-Example_share *ha_vtml::get_share() {
-  Example_share *tmp_share;
+Vtml_share *ha_vtml::get_share() {
+    Vtml_share *tmp_share;
 
   DBUG_TRACE;
 
   lock_shared_ha_data();
-  if (!(tmp_share = static_cast<Example_share *>(get_ha_share_ptr()))) {
-    tmp_share = new Example_share;
+  if (!(tmp_share = static_cast<Vtml_share *>(get_ha_share_ptr()))) {
+    tmp_share = new Vtml_share;
     if (!tmp_share) goto err;
 
     set_ha_share_ptr(static_cast<Handler_share *>(tmp_share));
@@ -260,8 +213,8 @@ int ha_vtml::close(void) {
   }
   @endcode
 
-  See ha_tina.cc for an vtml of extracting all of the data as strings.
-  ha_berekly.cc has an vtml of how to store it intact by "packing" it
+  See ha_tina.cc for an example of extracting all of the data as strings.
+  ha_berekly.cc has an example of how to store it intact by "packing" it
   for ha_berkeley's own native storage type.
 
   See the note for update_row() on auto_increments. This case also applies to
@@ -275,14 +228,89 @@ int ha_vtml::close(void) {
   sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc and sql_update.cc
 */
 
+int ha_vtml::encode_quote() {
+
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  std::string table_str(table->alias);
+  auto const pos=table_str.find_last_of('/');
+  const auto extracted_table_name=table_str.substr(pos+1);
+
+  for (Field **field = table->field; *field; field++) {
+    const char *ptr;
+    const char *end_ptr;
+    const bool was_null = (*field)->is_null();
+
+    String JsonString;
+    JsonString.length(0);
+    JsonString.append("{\"token\":\"");
+    JsonString.append(extracted_table_name.c_str());
+    JsonString.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":0,\"inputFeature\":['");
+    JsonString.append((*field)->field_name);
+    JsonString.append("']}");
+    sendLearningData(JsonString.c_ptr());
+
+    buffer.length(0);
+
+   //  assistance for backwards compatibility in production builds.
+   //   note: this will not work for ENUM columns.
+    if (was_null) {
+      (*field)->set_default();
+      (*field)->set_notnull();
+    }
+
+    (*field)->val_str(&attribute, &attribute);
+
+    if (was_null) (*field)->set_null();
+
+    if ((*field)->str_needs_quotes()) {
+      ptr = attribute.ptr();
+      end_ptr = attribute.length() + ptr;
+
+      buffer.append('"');
+
+      for (; ptr < end_ptr; ptr++) {
+        if (*ptr == '"') {
+          buffer.append('\\');
+          buffer.append('"');
+        } else if (*ptr == '\r') {
+          buffer.append('\\');
+          buffer.append('r');
+        } else if (*ptr == '\\') {
+          buffer.append('\\');
+          buffer.append('\\');
+        } else if (*ptr == '\n') {
+          buffer.append('\\');
+          buffer.append('n');
+        } else
+          buffer.append(*ptr);
+      }
+      buffer.append('"');
+    } else {
+      buffer.append(attribute);
+    }
+
+    std::string value_str(buffer.c_ptr());
+    replaceString(value_str, "\"","");
+    JsonString.length(0);
+    JsonString.append("{\"token\":\"");
+    JsonString.append(extracted_table_name.c_str());
+    JsonString.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+    JsonString.append(value_str.c_str());
+    JsonString.append("']}");
+    sendLearningData(JsonString.c_ptr());
+
+  }
+
+  return (buffer.length());
+}
+
+
 int ha_vtml::write_row(uchar *) {
+ 
   DBUG_TRACE;
-  /*
-    Example of a successful write_row. We don't store the data
-    anywhere; they are thrown away. A real implementation will
-    probably need to do something with 'buf'. We report a success
-    here, to pretend that the insert was successful.
-  */
+  encode_quote();
   return 0;
 }
 
@@ -295,7 +323,7 @@ int ha_vtml::write_row(uchar *) {
 
   @details
   Currently new_data will not have an updated auto_increament record. You can
-  do this for vtml by doing:
+  do this for example by doing:
 
   @code
 
@@ -311,6 +339,7 @@ int ha_vtml::write_row(uchar *) {
 */
 int ha_vtml::update_row(const uchar *, uchar *) {
   DBUG_TRACE;
+
   return HA_ERR_WRONG_COMMAND;
 }
 
@@ -415,8 +444,7 @@ int ha_vtml::index_last(uchar *) {
 /**
   @brief
   rnd_init() is called when the system wants the storage engine to do a table
-  scan. See the vtml in the introduction at the top of this file to see when
-  rnd_init() is called.
+  scan.
 
   @details
   Called from filesort.cc, records.cc, sql_handler.cc, sql_select.cc,
@@ -451,10 +479,53 @@ int ha_vtml::rnd_end() {
   filesort.cc, records.cc, sql_handler.cc, sql_select.cc, sql_table.cc and
   sql_update.cc
 */
-int ha_vtml::rnd_next(uchar *) {
-  int rc;
+bool first = true;
+int ha_vtml::rnd_next(uchar *buf) {
+
   DBUG_TRACE;
-  rc = HA_ERR_END_OF_FILE;
+  int rc = 0;
+
+  if (first){
+      rc = 0;
+      first = false;
+  }
+  else{
+      rc = HA_ERR_END_OF_FILE;
+      first = true;
+      return rc;
+  }
+
+  std::string table_str(table->alias);
+  auto const pos=table_str.find_last_of('/');
+  const auto extracted_table_name=table_str.substr(pos+1);
+
+  String logstr;
+  logstr.length(0);
+  logstr.append("rnd_next tablename: ");
+  logstr.append(extracted_table_name.c_str());
+
+  Field **field=table->field;
+  std::string field_str((*field)->field_name);
+  logstr.length(0);
+  logstr.append("rnd_next fieldname: ");
+  logstr.append(field_str.c_str());
+
+  String JsonString;
+  JsonString.length(0);
+  JsonString.append("{\"token\":\"");
+  JsonString.append(extracted_table_name.c_str());
+  JsonString.append("\",\"learnmode\":false,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+  JsonString.append((*field)->field_name);
+  JsonString.append("']}");
+
+  char response[100] = {0};
+  sendQueryData(JsonString.c_ptr(), response);
+
+  buffer.length(0);
+  buffer.append(response);
+  memcpy(buf, buffer.c_ptr(), buffer.length());
+  (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(), CHECK_FIELD_WARN);
+
   return rc;
 }
 
@@ -541,7 +612,9 @@ int ha_vtml::rnd_pos(uchar *, uchar *) {
   sql_show.cc, sql_table.cc, sql_union.cc and sql_update.cc
 */
 int ha_vtml::info(uint) {
+
   DBUG_TRACE;
+
   return 0;
 }
 
@@ -619,7 +692,7 @@ int ha_vtml::external_lock(THD *, int) {
   lock (if we don't want to use MySQL table locks at all), or add locks
   for many tables (like we do when we are using a MERGE handler).
 
-  Berkeley DB, for vtml, changes all WRITE locks to TL_WRITE_ALLOW_WRITE
+  Berkeley DB, for example, changes all WRITE locks to TL_WRITE_ALLOW_WRITE
   (which signals that we are doing WRITES, but are still allowing other
   readers and writers).
 
@@ -747,13 +820,16 @@ int ha_vtml::create(const char *name, TABLE *, HA_CREATE_INFO *,
   */
 
   /*
-    It's just an vtml of THDVAR_SET() usage below.
+    It's just an example of THDVAR_SET() usage below.
   */
+
   THD *thd = ha_thd();
   char *buf = (char *)my_malloc(PSI_NOT_INSTRUMENTED, SHOW_VAR_FUNC_BUFF_SIZE,
                                 MYF(MY_FAE));
   snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE, "Last creation '%s'", name);
   THDVAR_SET(thd, last_create_thdvar, buf);
+
+
   my_free(buf);
 
   uint count = THDVAR(thd, create_count_thdvar) + 1;
@@ -772,10 +848,10 @@ static int srv_signed_int_var = 0;
 static long srv_signed_long_var = 0;
 static longlong srv_signed_longlong_var = 0;
 
-const char *enum_var_names[] = {"e1", "e2", NullS};
+const char *enum_var_names_vtml[] = {"e1", "e2", NullS};
 
-TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
-                            "enum_var_typelib", enum_var_names, NULL};
+TYPELIB enum_var_typelib_vtml = {array_elements(enum_var_names_vtml) - 1,
+                            "enum_var_typelib_vtml", enum_var_names_vtml, NULL};
 
 static MYSQL_SYSVAR_ENUM(enum_var,                        // name
                          srv_enum_var,                    // varname
@@ -784,7 +860,7 @@ static MYSQL_SYSVAR_ENUM(enum_var,                        // name
                          NULL,                            // check
                          NULL,                            // update
                          0,                               // def
-                         &enum_var_typelib);              // typelib
+                         &enum_var_typelib_vtml);         // typelib
 
 static MYSQL_SYSVAR_ULONG(ulong_var, srv_ulong_var, PLUGIN_VAR_RQCMDARG,
                           "0..1000", NULL, NULL, 8, 0, 1000, 0);
@@ -888,8 +964,8 @@ mysql_declare_plugin(vtml){
     MYSQL_STORAGE_ENGINE_PLUGIN,
     &vtml_storage_engine,
     "VTML",
-    "Brian Aker, MySQL AB",
-    "Example storage engine",
+    "Hadi Aydogdu, hadiaydogdu@gmail.com",
+    "VTML Storage Engine",
     PLUGIN_LICENSE_GPL,
     vtml_init_func, /* Plugin Init */
     NULL,              /* Plugin check uninstall */

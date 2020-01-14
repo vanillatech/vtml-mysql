@@ -22,20 +22,12 @@
 
 /** @file ha_vtml.h
 
-    @brief
-  The ha_vtml engine is a stubbed storage engine for vtml purposes only;
-  it does nothing at this point. Its purpose is to provide a source
-  code illustration of how to begin writing new storage engines; see also
-  /storage/vtml/ha_vtml.cc.
+  @brief
+  This class sends the field name and row info to the remote server
+  by VTMLCommunicationHandler. Differently from any other storage engines,
+  it stores the data in the server. In need of reading the data this class sends
+  a json string to the server and request the data.
 
-    @note
-  Please read ha_vtml.cc before reading this file.
-  Reminder: The vtml storage engine implements all methods that are
-  *required* to be implemented. For a full list of all methods that you can
-  implement, see handler.h.
-
-   @see
-  /sql/handler.h and /storage/vtml/ha_vtml.cc
 */
 
 #include <sys/types.h>
@@ -45,16 +37,19 @@
 #include "my_inttypes.h"
 #include "sql/handler.h" /* handler */
 #include "thr_lock.h"    /* THR_LOCK, THR_LOCK_DATA */
-
+#include "sql_string.h"
 /** @brief
-  Example_share is a class that will be shared among all open handlers.
+  Vtml_share is a class that will be shared among all open handlers.
   This vtml implements the minimum of what you will probably need.
 */
-class Example_share : public Handler_share {
+
+
+class Vtml_share : public Handler_share {
  public:
   THR_LOCK lock;
-  Example_share();
-  ~Example_share() { thr_lock_delete(&lock); }
+  ha_rows rows_recorded;   /* Number of rows in tables */
+  Vtml_share();
+  ~Vtml_share() { thr_lock_delete(&lock); }
 };
 
 /** @brief
@@ -62,9 +57,9 @@ class Example_share : public Handler_share {
 */
 class ha_vtml : public handler {
   THR_LOCK_DATA lock;          ///< MySQL lock
-  Example_share *share;        ///< Shared lock info
-  Example_share *get_share();  ///< Get the share
-
+  Vtml_share *share;        ///< Shared lock info
+  Vtml_share *get_share();  ///< Get the share
+  String buffer;
  public:
   ha_vtml(handlerton *hton, TABLE_SHARE *table_arg);
   ~ha_vtml() {}
@@ -134,7 +129,7 @@ class ha_vtml : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_keys() const { return 0; }
+  uint max_supported_keys() const { return 100; }
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -145,7 +140,7 @@ class ha_vtml : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_parts() const { return 0; }
+  uint max_supported_key_parts() const { return 100; }
 
   /** @brief
     unireg.cc will call this to make sure that the storage engine can handle
@@ -156,7 +151,7 @@ class ha_vtml : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_length() const { return 0; }
+  uint max_supported_key_length() const { return 100; }
 
   /** @brief
     Called in test_quick_select to determine if indexes should be used.
@@ -246,6 +241,7 @@ class ha_vtml : public handler {
     cursor to the start of the table; no need to deallocate and allocate
     it again. This is a required method.
   */
+  int encode_quote();
   int rnd_init(bool scan);  // required
   int rnd_end();
   int rnd_next(uchar *buf);             ///< required
