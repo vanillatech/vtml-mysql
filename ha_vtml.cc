@@ -520,11 +520,8 @@ int ha_vtml::rnd_next(uchar *buf) {
 
   char response[100] = {0};
   sendQueryData(JsonString.c_ptr(), response);
-
-  buffer.length(0);
-  buffer.append(response);
-  memcpy(buf, buffer.c_ptr(), buffer.length());
-  (*field)->store(buffer.ptr(), buffer.length(), buffer.charset(), CHECK_FIELD_WARN);
+  memset(buf, 0, table->s->null_bytes);
+  (*field)->store(response, strlen(response), &my_charset_bin, CHECK_FIELD_WARN);
 
   return rc;
 }
