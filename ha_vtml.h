@@ -196,6 +196,8 @@ class ha_vtml : public handler {
   */
   int update_row(const uchar *old_data, uchar *new_data);
 
+  int encode_update_quote(uchar *buf);
+
   /** @brief
     We implement this in ha_vtml.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.

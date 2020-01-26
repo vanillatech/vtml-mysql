@@ -314,6 +314,95 @@ int ha_vtml::write_row(uchar *) {
   return 0;
 }
 
+int ha_vtml::encode_update_quote(uchar *) {
+
+  char attribute_buffer[1024];
+  String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
+
+  std::string table_str(table->alias);
+  auto const pos=table_str.find_last_of('/');
+  const auto extracted_table_name=table_str.substr(pos+1);
+
+  String JsonFeature;
+  JsonFeature.length(0);
+  String JsonInput;
+  JsonInput.length(0);
+
+  for (Field **field = table->field; *field; field++) {
+    const char *ptr;
+    const char *end_ptr;
+    const bool was_null = (*field)->is_null();
+
+    buffer.length(0);
+
+    if (was_null) {
+      (*field)->set_default();
+      (*field)->set_notnull();
+    }
+
+    (*field)->val_str(&attribute, &attribute);
+
+    if (was_null) (*field)->set_null();
+
+    if ((*field)->str_needs_quotes()) {
+      ptr = attribute.ptr();
+      end_ptr = attribute.length() + ptr;
+
+      buffer.append('"');
+
+      for (; ptr < end_ptr; ptr++) {
+        if (*ptr == '"') {
+          buffer.append('\\');
+          buffer.append('"');
+        } else if (*ptr == '\r') {
+          buffer.append('\\');
+          buffer.append('r');
+        } else if (*ptr == '\\') {
+          buffer.append('\\');
+          buffer.append('\\');
+        } else if (*ptr == '\n') {
+          buffer.append('\\');
+          buffer.append('n');
+        } else
+          buffer.append(*ptr);
+      }
+      buffer.append('"');
+    } else {
+      buffer.append(attribute);
+    }
+
+    if (JsonInput.length() != 0)
+    {
+    	JsonFeature.append("'");
+        std::string value_str(buffer.c_ptr());
+        replaceString(value_str, "\"","");
+        JsonFeature.append(value_str.c_str());
+    	JsonFeature.append("',");
+    }
+    if (JsonInput.length() == 0)
+    {
+    	JsonInput.append("{\"token\":\"");
+    	JsonInput.append(extracted_table_name.c_str());
+    	JsonInput.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+        std::string value_str(buffer.c_ptr());
+        replaceString(value_str, "\"","");
+        JsonInput.append(value_str.c_str());
+    	JsonInput.append("']}");
+    	JsonFeature.append("{\"token\":\"");
+    	JsonFeature.append(extracted_table_name.c_str());
+    	JsonFeature.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":0,\"inputFeature\":['");
+    	JsonFeature.append((*field)->field_name);
+    	JsonFeature.append("'],\"featureMatrix\":[");
+    }
+  }
+  JsonFeature.length(JsonFeature.length() - 1);
+  JsonFeature.append("]}");
+
+  sendLearningData(JsonFeature.c_ptr());
+  sendLearningData(JsonInput.c_ptr());
+  return (buffer.length());
+}
+
 /**
   @brief
   Yes, update_row() does what you expect, it updates a row. old_data will have
@@ -337,10 +426,12 @@ int ha_vtml::write_row(uchar *) {
   @see
   sql_select.cc, sql_acl.cc, sql_update.cc and sql_insert.cc
 */
-int ha_vtml::update_row(const uchar *, uchar *) {
+int ha_vtml::update_row(const uchar *, uchar *new_data) {
   DBUG_TRACE;
 
-  return HA_ERR_WRONG_COMMAND;
+  encode_update_quote(new_data);
+
+  return 0;
 }
 
 /**
@@ -494,34 +585,27 @@ int ha_vtml::rnd_next(uchar *buf) {
       first = true;
       return rc;
   }
+  memset(buf, 0, table->s->null_bytes);
 
   std::string table_str(table->alias);
   auto const pos=table_str.find_last_of('/');
   const auto extracted_table_name=table_str.substr(pos+1);
 
-  String logstr;
-  logstr.length(0);
-  logstr.append("rnd_next tablename: ");
-  logstr.append(extracted_table_name.c_str());
+  for (Field **field = table->field; *field; field++) {
 
-  Field **field=table->field;
-  std::string field_str((*field)->field_name);
-  logstr.length(0);
-  logstr.append("rnd_next fieldname: ");
-  logstr.append(field_str.c_str());
+	  String JsonString;
+	  JsonString.length(0);
+	  JsonString.append("{\"token\":\"");
+	  JsonString.append(extracted_table_name.c_str());
+	  JsonString.append("\",\"learnmode\":false,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+	  JsonString.append((*field)->field_name);
+	  JsonString.append("']}");
 
-  String JsonString;
-  JsonString.length(0);
-  JsonString.append("{\"token\":\"");
-  JsonString.append(extracted_table_name.c_str());
-  JsonString.append("\",\"learnmode\":false,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
-  JsonString.append((*field)->field_name);
-  JsonString.append("']}");
+	  char response[100] = {0};
+	  sendQueryData(JsonString.c_ptr(), response);
 
-  char response[100] = {0};
-  sendQueryData(JsonString.c_ptr(), response);
-  memset(buf, 0, table->s->null_bytes);
-  (*field)->store(response, strlen(response), &my_charset_bin, CHECK_FIELD_WARN);
+	  (*field)->store(response, strlen(response), &my_charset_bin, CHECK_FIELD_WARN);
+  }
 
   return rc;
 }
@@ -611,7 +695,7 @@ int ha_vtml::rnd_pos(uchar *, uchar *) {
 int ha_vtml::info(uint) {
 
   DBUG_TRACE;
-
+  stats.records = 2;
   return 0;
 }
 
