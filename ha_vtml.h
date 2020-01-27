@@ -60,6 +60,9 @@ class ha_vtml : public handler {
   Vtml_share *share;        ///< Shared lock info
   Vtml_share *get_share();  ///< Get the share
   String buffer;
+  std::vector<std::string> m_row_items;
+  std::vector<std::string> m_update_row_items;
+  std::vector<std::string> m_fields;
  public:
   ha_vtml(handlerton *hton, TABLE_SHARE *table_arg);
   ~ha_vtml() {}

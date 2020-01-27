@@ -39,12 +39,11 @@
 #include "typelib.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <storage/vtml/VTMLCommunicationHandler.h>
 #include "sql_string.h"
 #include "sql/field.h"
-
-
+#include <string>
+#include <vector>
 void replaceString(std::string& str, const std::string& occurance,
                           const std::string& replace) {
     size_t pos = 0;
@@ -314,8 +313,7 @@ int ha_vtml::write_row(uchar *) {
   return 0;
 }
 
-int ha_vtml::encode_update_quote(uchar *) {
-
+int ha_vtml::encode_update_quote(uchar *buf) {
   char attribute_buffer[1024];
   String attribute(attribute_buffer, sizeof(attribute_buffer), &my_charset_bin);
 
@@ -323,11 +321,8 @@ int ha_vtml::encode_update_quote(uchar *) {
   auto const pos=table_str.find_last_of('/');
   const auto extracted_table_name=table_str.substr(pos+1);
 
-  String JsonFeature;
-  JsonFeature.length(0);
-  String JsonInput;
-  JsonInput.length(0);
-
+  m_update_row_items.clear();
+  m_fields.clear();
   for (Field **field = table->field; *field; field++) {
     const char *ptr;
     const char *end_ptr;
@@ -370,31 +365,45 @@ int ha_vtml::encode_update_quote(uchar *) {
     } else {
       buffer.append(attribute);
     }
+    m_update_row_items.push_back(buffer.c_ptr());
+    m_fields.push_back((*field)->field_name);
+  }
 
-    if (JsonInput.length() != 0)
-    {
-    	JsonFeature.append("'");
-        std::string value_str(buffer.c_ptr());
-        replaceString(value_str, "\"","");
-        JsonFeature.append(value_str.c_str());
-    	JsonFeature.append("',");
-    }
-    if (JsonInput.length() == 0)
-    {
-    	JsonInput.append("{\"token\":\"");
-    	JsonInput.append(extracted_table_name.c_str());
-    	JsonInput.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
-        std::string value_str(buffer.c_ptr());
+  String JsonFeature;
+  JsonFeature.length(0);
+  String JsonInput;
+  JsonInput.length(0);
+
+  JsonInput.append("{\"token\":\"");
+  JsonInput.append(extracted_table_name.c_str());
+  JsonInput.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+  JsonFeature.append("{\"token\":\"");
+  JsonFeature.append(extracted_table_name.c_str());
+  JsonFeature.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":0,\"inputFeature\":['");
+
+  for (int i = 0; i < m_update_row_items.size(); i++){
+
+     if (m_update_row_items[i].find(m_row_items[i]) == std::string::npos )
+     {
+        std::string value_str(m_update_row_items[i].c_str());
         replaceString(value_str, "\"","");
         JsonInput.append(value_str.c_str());
-    	JsonInput.append("']}");
-    	JsonFeature.append("{\"token\":\"");
-    	JsonFeature.append(extracted_table_name.c_str());
-    	JsonFeature.append("\",\"learnmode\":true,\"activationThreshold\":0.49,\"outputLMT\":0,\"inputFeature\":['");
-    	JsonFeature.append((*field)->field_name);
-    	JsonFeature.append("'],\"featureMatrix\":[");
-    }
+        JsonFeature.append(m_fields[i].c_str());
+        break;
+     }
   }
+  JsonFeature.append("'],\"featureMatrix\":[");
+  for (int i = 0; i < m_update_row_items.size(); i++){
+     if (m_update_row_items[i].find(m_row_items[i]) != std::string::npos)
+     {
+        JsonFeature.append("'");
+        std::string value_str(m_update_row_items[i].c_str());
+        replaceString(value_str, "\"","");
+        JsonFeature.append(value_str.c_str());
+        JsonFeature.append("',");
+     }
+  }
+  JsonInput.append("']}");
   JsonFeature.length(JsonFeature.length() - 1);
   JsonFeature.append("]}");
 
@@ -590,21 +599,21 @@ int ha_vtml::rnd_next(uchar *buf) {
   std::string table_str(table->alias);
   auto const pos=table_str.find_last_of('/');
   const auto extracted_table_name=table_str.substr(pos+1);
-
+  m_row_items.clear();
   for (Field **field = table->field; *field; field++) {
 
-	  String JsonString;
-	  JsonString.length(0);
-	  JsonString.append("{\"token\":\"");
-	  JsonString.append(extracted_table_name.c_str());
-	  JsonString.append("\",\"learnmode\":false,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
-	  JsonString.append((*field)->field_name);
-	  JsonString.append("']}");
+      String JsonString;
+      JsonString.length(0);
+      JsonString.append("{\"token\":\"");
+      JsonString.append(extracted_table_name.c_str());
+      JsonString.append("\",\"learnmode\":false,\"activationThreshold\":0.49,\"outputLMT\":20,\"inputFeature\":['");
+      JsonString.append((*field)->field_name);
+      JsonString.append("']}");
 
-	  char response[100] = {0};
-	  sendQueryData(JsonString.c_ptr(), response);
-
-	  (*field)->store(response, strlen(response), &my_charset_bin, CHECK_FIELD_WARN);
+      char response[100] = {0};
+      sendQueryData(JsonString.c_ptr(), response);
+      m_row_items.push_back(response);
+      (*field)->store(response, strlen(response), &my_charset_bin, CHECK_FIELD_WARN);
   }
 
   return rc;
