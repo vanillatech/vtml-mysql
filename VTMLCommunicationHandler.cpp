@@ -20,7 +20,7 @@ int createCommunicationSocket()
 {
     int sockfd = 0;
     struct sockaddr_in serv_addr;
-
+    struct hostent *server;
     /* Create a socket point */
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -29,11 +29,16 @@ int createCommunicationSocket()
         //perror("ERROR opening socket");
         return 0;
     }
+    server = gethostbyname("mlservice.vanillatech.de");
+    if (server == NULL)
+    {
+        return 0;
+    }
 
     bzero((char *) &serv_addr , sizeof(serv_addr));
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = inet_addr("148.251.54.231");
+    bcopy((char *)server->h_addr, (char*)&serv_addr.sin_addr.s_addr, server->h_length);
     serv_addr.sin_port = htons(PORT);
 
     /* Now connect to the server */
